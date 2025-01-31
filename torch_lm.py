@@ -3,6 +3,9 @@ from dataclasses import dataclass
 from typing import Optional
 from einops import rearrange
 
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
 @dataclass
 class Config: vocab_size: int = 50257; max_seq_len: int = 1024; d_model: int = 768; n_layers: int = 12; n_heads: int = 12
 
@@ -75,12 +78,14 @@ class LM(nn.Module):
             x = block(x, mask)
         return self.head(self.ln_f(x))
 
-def benchmark_torch(batch_size=32, seq_len=512, n_layers=12, n_heads=12, d_model=768, steps=100, warmup=3, device='cuda', dtype=torch.float32):
+def benchmark_torch(batch_size=128, seq_len=512, n_layers=12, n_heads=12, d_model=768, steps=30, warmup=1, device='cuda', dtype=torch.float32):
     assert torch.cuda.is_available(), "CUDA device required"
     device = 'cuda'
+
     torch.manual_seed(0)
     config = Config(n_layers=n_layers, n_heads=n_heads, d_model=d_model, max_seq_len=seq_len)
     model = LM(config).to(device=device, dtype=dtype)
+    model = torch.compile(model)
     model.eval()
     x = torch.randint(0, config.vocab_size, (batch_size, seq_len), device=device)
     
@@ -88,16 +93,14 @@ def benchmark_torch(batch_size=32, seq_len=512, n_layers=12, n_heads=12, d_model
         for _ in range(warmup):
             model(x)
     
-    torch.cuda.synchronize()
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
-    
+    torch.cuda.synchronize()
     start.record()
     with torch.no_grad():
         for _ in range(steps):
             model(x)
     end.record()
-    
     torch.cuda.synchronize()
     return start.elapsed_time(end) / steps
 
@@ -108,10 +111,10 @@ if __name__ == "__main__":
     times = []
     for i in range(trials):
         ms = benchmark_torch(
-            batch_size=32,
+            batch_size=128,
             seq_len=512,
-            steps=50,
-            warmup=3
+            steps=30,
+            warmup=1
         )
         times.append(ms)
         print(f"Trial {i+1}: {ms:.2f} ms per step")

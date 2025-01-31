@@ -1,12 +1,5 @@
 torch
-torchvision
 jax
 jaxlib
 flax
-optax
-numpy
 einops
-transformers
-datasets
-tiktoken
-wandb

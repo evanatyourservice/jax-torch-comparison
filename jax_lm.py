@@ -1,9 +1,12 @@
 from typing import Optional
-import jax, jax.numpy as jnp
+import jax
+import jax.numpy as jnp
 from flax import linen as nn
 import time
 from einops import rearrange
 from dataclasses import dataclass
+
+# jax.config.update("jax_default_matmul_precision", "tensorfloat32")
 
 @dataclass
 class Config: vocab_size: int = 50257; max_seq_len: int = 1024; d_model: int = 768; n_layers: int = 12; n_heads: int = 12
@@ -81,28 +84,30 @@ class LM(nn.Module):
         for block in self.blocks:
             x = block(x, mask)
         return self.head(self.ln_f(x))
-@jax.jit
-def model_step(params, x):
-    return model.apply({'params': params}, x)
 
-def benchmark_jax(batch_size=32, seq_len=512, n_layers=12, n_heads=12, d_model=768, steps=100, warmup=3, dtype=jnp.float32):
+@jax.jit
+def model_step(variables, x):
+    return model.apply(variables, x)
+
+def benchmark_jax(batch_size=128, seq_len=512, n_layers=12, n_heads=12, d_model=768, steps=30, warmup=1, dtype=jnp.float32):
     key = jax.random.PRNGKey(0)
     config = Config(n_layers=n_layers, n_heads=n_heads, d_model=d_model, max_seq_len=seq_len)
     global model
     model = LM(config)
     
     x = jax.random.randint(key, (batch_size, seq_len), 0, config.vocab_size)
-    params = model.init(key, x)
+    variables = model.init(key, x)
     
     print(f"JAX devices: {jax.devices()}")
     x = jax.device_put(x, jax.devices()[0])
     
     for _ in range(warmup):
-        model_step(params, x).block_until_ready()
+        model_step(variables, x).block_until_ready()
     
     start = time.time()
     for _ in range(steps):
-        model_step(params, x).block_until_ready()
+        out = model_step(variables, x)
+    out = jax.block_until_ready(out)
     end = time.time()
     
     total_time_ms = (end - start) * 1000
@@ -115,10 +120,10 @@ if __name__ == "__main__":
     times = []
     for i in range(trials):
         ms = benchmark_jax(
-            batch_size=32,
+            batch_size=128,
             seq_len=512,
-            steps=50,
-            warmup=3
+            steps=30,
+            warmup=1
         )
         times.append(ms)
         print(f"Trial {i+1}: {ms:.2f} ms per step")
