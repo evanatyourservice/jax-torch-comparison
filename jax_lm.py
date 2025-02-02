@@ -62,6 +62,7 @@ class RMSNorm(nn.Module):
 
 class Block(nn.Module):
     config: Config
+    scanning: bool = False
     
     def setup(self):
         self.ln1 = RMSNorm(self.config.d_model)
@@ -70,8 +71,12 @@ class Block(nn.Module):
         self.ff = FeedForward(self.config)
         
     def __call__(self, x, mask=None):
+        if self.scanning:
+            x, mask = x
         x = x + self.attn(self.ln1(x), mask)
         x = x + self.ff(self.ln2(x))
+        if self.scanning:
+            return x, mask
         return x
 
 class LM(nn.Module):
@@ -84,25 +89,34 @@ class LM(nn.Module):
             embedding_init=nn.initializers.normal(0.02),
         )
         self.pos_emb = self.param('pos_emb', nn.initializers.zeros, (1, self.config.max_seq_len, self.config.d_model))
-        self.blocks = [Block(self.config) for _ in range(self.config.n_layers)]
+        if self.config.scan:
+            # (remat_scan only applies remat if len(lengths) > 1)
+            self.blocks = nn.remat_scan(Block, lengths=(self.config.n_layers,))(self.config, True)
+        else:
+            self.blocks = [Block(self.config) for _ in range(self.config.n_layers)]
         self.ln_f = RMSNorm(self.config.d_model)
         self.head = nn.Dense(
             self.config.vocab_size,
             use_bias=False,
             kernel_init=nn.initializers.normal(0.02),
         )
-        
+
+        self.scanning = self.config.scan
+
     def __call__(self, idx):
         b, t = idx.shape
         mask = create_mask(t)
         x = self.tok_emb(idx) + self.pos_emb[:, :t, :]
-        for block in self.blocks:
-            x = block(x, mask)
+        if self.scanning:
+            x = self.blocks((x, mask))[0]
+        else:
+            for block in self.blocks:
+                x = block(x, mask)
         return self.head(self.ln_f(x))
 
-def benchmark_jax(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_model=1024, steps=10, warmup=3, dtype=jnp.bfloat16):
+def benchmark_jax(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_model=1024, steps=10, warmup=3, dtype=jnp.bfloat16, scan=False):
     key = jax.random.PRNGKey(0)
-    config = Config(n_layers=n_layers, n_heads=n_heads, d_model=d_model, max_seq_len=seq_len)
+    config = Config(n_layers=n_layers, n_heads=n_heads, d_model=d_model, max_seq_len=seq_len, scan=scan)
     model = LM(config)
 
     @jax.jit
@@ -133,6 +147,8 @@ if __name__ == "__main__":
     print(f"Devices available: {jax.devices()}\n")
     
     trials = 3
+
+    print("Testing without scan:\n")
     times = []
     for i in range(trials):
         ms = benchmark_jax(
@@ -142,7 +158,27 @@ if __name__ == "__main__":
             n_heads=16,
             d_model=1024,
             steps=10,
-            warmup=3
+            warmup=3,
+            scan=False
+        )
+        times.append(ms)
+        print(f"Trial {i+1}: {ms:.2f} ms per step")
+    
+    avg_time = sum(times) / len(times)
+    print(f"\nAverage: {avg_time:.2f} ms per step")
+
+    print("\nTesting with scan:\n")
+    times = []
+    for i in range(trials):
+        ms = benchmark_jax(
+            batch_size=128,
+            seq_len=1024,
+            n_layers=24,
+            n_heads=16,
+            d_model=1024,
+            steps=10,
+            warmup=3,
+            scan=True
         )
         times.append(ms)
         print(f"Trial {i+1}: {ms:.2f} ms per step")

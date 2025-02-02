@@ -96,7 +96,7 @@ class LM(nn.Module):
             x = block(x, mask)
         return self.head(self.ln_f(x))
 
-def benchmark_torch(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_model=1024, steps=10, warmup=3, device='cuda', dtype=torch.bfloat16):
+def benchmark_torch(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_model=1024, steps=10, warmup=3, device='cuda', dtype=torch.bfloat16, compile=False):
     assert torch.cuda.is_available(), "CUDA device required"
     device = 'cuda'
     torch.backends.cudnn.benchmark = True
@@ -104,7 +104,8 @@ def benchmark_torch(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_mode
     torch.manual_seed(0)
     config = Config(n_layers=n_layers, n_heads=n_heads, d_model=d_model, max_seq_len=seq_len)
     model = LM(config).to(device=device, dtype=dtype)
-    model = torch.compile(model)
+    if compile:
+        model = torch.compile(model)
     model.eval()
     x = torch.randint(0, config.vocab_size, (batch_size, seq_len), device=device)
     
@@ -134,6 +135,8 @@ if __name__ == "__main__":
     print(f"Using device: {torch.cuda.get_device_name(0)}\n")
     
     trials = 3
+
+    print("Testing without compile:\n")
     times = []
     for i in range(trials):
         ms = benchmark_torch(
@@ -143,10 +146,30 @@ if __name__ == "__main__":
             n_heads=16,
             d_model=1024,
             steps=10,
-            warmup=3
+            warmup=3,
+            compile=False
         )
         times.append(ms)
         print(f"Trial {i+1}: {ms:.2f} ms per step")
 
+    avg_time = sum(times) / len(times)
+    print(f"\nAverage: {avg_time:.2f} ms per step")
+
+    print("\nTesting with compile:\n")
+    times = []
+    for i in range(trials):
+        ms = benchmark_torch(
+            batch_size=128,
+            seq_len=1024,
+            n_layers=24,
+            n_heads=16,
+            d_model=1024,
+            steps=10,
+            warmup=3,
+            compile=True
+        )
+        times.append(ms)
+        print(f"Trial {i+1}: {ms:.2f} ms per step")
+    
     avg_time = sum(times) / len(times)
     print(f"\nAverage: {avg_time:.2f} ms per step")
