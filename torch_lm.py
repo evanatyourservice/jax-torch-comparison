@@ -134,42 +134,38 @@ if __name__ == "__main__":
     print(f"PyTorch CUDA version: {torch.version.cuda}")
     print(f"Using device: {torch.cuda.get_device_name(0)}\n")
     
-    trials = 3
+    batch_sizes = [64, 128, 256]
 
     print("Testing without compile:\n")
-    times = []
-    for i in range(trials):
-        ms = benchmark_torch(
-            batch_size=128,
-            seq_len=1024,
-            n_layers=24,
-            n_heads=16,
-            d_model=1024,
-            steps=10,
-            warmup=3,
-            compile=False
-        )
-        times.append(ms)
-        print(f"Trial {i+1}: {ms:.2f} ms per step")
-
-    avg_time = sum(times) / len(times)
-    print(f"\nAverage: {avg_time:.2f} ms per step")
+    for bs in batch_sizes:
+        try:
+            ms = benchmark_torch(
+                batch_size=bs,
+                seq_len=1024,
+                n_layers=24,
+                n_heads=16,
+                d_model=1024,
+                steps=10,
+                warmup=3,
+                compile=False
+            )
+            print(f"Batch size {bs}: {ms:.2f} ms per step")
+        except Exception as e:
+            print(f"Error with batch size {bs}: {str(e)}")
 
     print("\nTesting with compile:\n")
-    times = []
-    for i in range(trials):
-        ms = benchmark_torch(
-            batch_size=128,
-            seq_len=1024,
-            n_layers=24,
-            n_heads=16,
-            d_model=1024,
-            steps=10,
-            warmup=3,
-            compile=True
-        )
-        times.append(ms)
-        print(f"Trial {i+1}: {ms:.2f} ms per step")
-    
-    avg_time = sum(times) / len(times)
-    print(f"\nAverage: {avg_time:.2f} ms per step")
+    for bs in batch_sizes:
+        try:
+            ms = benchmark_torch(
+                batch_size=bs,
+                seq_len=1024,
+                n_layers=24,
+                n_heads=16,
+                d_model=1024,
+                steps=10,
+                warmup=3,
+                compile=True
+            )
+            print(f"Batch size {bs}: {ms:.2f} ms per step")
+        except Exception as e:
+            print(f"Error with batch size {bs}: {str(e)}")
