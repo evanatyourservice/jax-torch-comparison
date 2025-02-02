@@ -1,18 +1,22 @@
-import math, torch, torch.nn as nn, torch.nn.functional as F
-from dataclasses import dataclass
 from typing import Optional
-from einops import rearrange
+import math
+from dataclasses import dataclass
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from einops import rearrange
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+torch.set_float32_matmul_precision("high")  # tensorfloat32
 
 
 @dataclass
 class Config: vocab_size: int = 50257; max_seq_len: int = 1024; d_model: int = 1024; n_layers: int = 24; n_heads: int = 16
 
 def create_mask(t, device):
-    mask = torch.tril(torch.ones((t, t), dtype=torch.float32))
+    mask = torch.tril(torch.ones((t, t), dtype=torch.bool))
     return mask.view(1, 1, t, t).to(device=device)
 
 class Attention(nn.Module):
@@ -31,7 +35,7 @@ class Attention(nn.Module):
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.n_heads), (q, k, v))
         attn = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_head)
         if mask is not None:
-            attn = attn.masked_fill(mask == 0, float('-inf'))
+            attn = attn.masked_fill(mask == 0, 0.7 * torch.finfo(attn.dtype).min)
         attn = F.softmax(attn.float(), dim=-1).to(x.dtype)
         out = torch.matmul(attn, v)
         return self.out(rearrange(out, 'b h n d -> b n (h d)'))
@@ -95,13 +99,17 @@ class LM(nn.Module):
 def benchmark_torch(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_model=1024, steps=10, warmup=3, device='cuda', dtype=torch.bfloat16):
     assert torch.cuda.is_available(), "CUDA device required"
     device = 'cuda'
-
+    torch.backends.cudnn.benchmark = True
+    
     torch.manual_seed(0)
     config = Config(n_layers=n_layers, n_heads=n_heads, d_model=d_model, max_seq_len=seq_len)
     model = LM(config).to(device=device, dtype=dtype)
     model = torch.compile(model)
     model.eval()
     x = torch.randint(0, config.vocab_size, (batch_size, seq_len), device=device)
+    
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"Starting trial with {n_params/1e6:.1f}M parameter model...")
     
     with torch.no_grad():
         for _ in range(warmup):
@@ -124,12 +132,13 @@ def benchmark_torch(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_mode
 if __name__ == "__main__":
     print(f"PyTorch CUDA version: {torch.version.cuda}")
     print(f"Using device: {torch.cuda.get_device_name(0)}\n")
+    
     trials = 3
     times = []
     for i in range(trials):
         ms = benchmark_torch(
             batch_size=128,
-            seq_len=512,
+            seq_len=1024,
             n_layers=24,
             n_heads=16,
             d_model=1024,
@@ -138,6 +147,6 @@ if __name__ == "__main__":
         )
         times.append(ms)
         print(f"Trial {i+1}: {ms:.2f} ms per step")
-    
+
     avg_time = sum(times) / len(times)
     print(f"\nAverage: {avg_time:.2f} ms per step")

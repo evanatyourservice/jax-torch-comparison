@@ -1,17 +1,20 @@
 from typing import Optional
+import time
+from dataclasses import dataclass
+
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
-import time
 from einops import rearrange
-from dataclasses import dataclass
+
+jax.config.update('jax_default_matmul_precision', 'tensorfloat32')  # tensorfloat32
 
 
 @dataclass
 class Config: vocab_size: int = 50257; max_seq_len: int = 1024; d_model: int = 1024; n_layers: int = 24; n_heads: int = 16; scan: bool = False
 
 def create_mask(t):
-    mask = jnp.tril(jnp.ones((t, t), dtype=jnp.float32))
+    mask = jnp.tril(jnp.ones((t, t), dtype=jnp.bool))
     return mask.reshape(1, 1, t, t)
 
 class Attention(nn.Module):
@@ -29,7 +32,7 @@ class Attention(nn.Module):
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.n_heads), (q, k, v))
         attn = jnp.matmul(q, jnp.swapaxes(k, -2, -1)) / jnp.sqrt(self.d_head)
         if mask is not None:
-            attn = jnp.where(mask == 0, float('-inf'), attn)
+            attn = jnp.where(mask, attn, 0.7 * jnp.finfo(attn.dtype).min)
         attn = jax.nn.softmax(attn.astype(jnp.float32), axis=-1).astype(x.dtype)
         out = jnp.matmul(attn, v)
         return self.out(rearrange(out, 'b h n d -> b n (h d)'))
@@ -97,23 +100,22 @@ class LM(nn.Module):
             x = block(x, mask)
         return self.head(self.ln_f(x))
 
-@jax.jit
-def model_step(variables, x):
-    return model.apply(variables, x)
-
 def benchmark_jax(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_model=1024, steps=10, warmup=3, dtype=jnp.bfloat16):
     key = jax.random.PRNGKey(0)
     config = Config(n_layers=n_layers, n_heads=n_heads, d_model=d_model, max_seq_len=seq_len)
-    global model
     model = LM(config)
+
+    @jax.jit
+    def model_step(variables, x):
+        return model.apply(variables, x)
     
     x = jax.random.randint(key, (batch_size, seq_len), 0, config.vocab_size)
     variables = model.init(key, x)
-    variables = jax.tree_map(lambda x: x.astype(dtype) if x.dtype == jnp.float32 else x, variables)
+    variables = jax.tree.map(lambda x: x.astype(dtype) if x.dtype == jnp.float32 else x, variables)
     
-    print(f"JAX devices: {jax.devices()}")
-    x = jax.device_put(x, jax.devices()[0])
-    
+    n_params = sum(x.size for x in jax.tree.leaves(variables))
+    print(f"Starting trial with {n_params/1e6:.1f}M parameter model...")
+
     for _ in range(warmup):
         model_step(variables, x).block_until_ready()
     
@@ -129,12 +131,13 @@ def benchmark_jax(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_model=
 if __name__ == "__main__":
     print(f"JAX version: {jax.__version__}")
     print(f"Devices available: {jax.devices()}\n")
+    
     trials = 3
     times = []
     for i in range(trials):
         ms = benchmark_jax(
             batch_size=128,
-            seq_len=512,
+            seq_len=1024,
             n_layers=24,
             n_heads=16,
             d_model=1024,
