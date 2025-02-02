@@ -3,11 +3,13 @@ from dataclasses import dataclass
 from typing import Optional
 from einops import rearrange
 
+
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
+
 @dataclass
-class Config: vocab_size: int = 50257; max_seq_len: int = 1024; d_model: int = 768; n_layers: int = 12; n_heads: int = 12
+class Config: vocab_size: int = 50257; max_seq_len: int = 1024; d_model: int = 1024; n_layers: int = 24; n_heads: int = 16
 
 def create_mask(t, device):
     mask = torch.tril(torch.ones((t, t), dtype=torch.float32))
@@ -22,7 +24,7 @@ class Attention(nn.Module):
         self.out = nn.Linear(config.d_model, config.d_model, bias=False)
         nn.init.normal_(self.qkv.weight, std=0.02)
         nn.init.normal_(self.out.weight, std=0.02)
-        
+
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         qkv = self.qkv(x)
         q, k, v = torch.chunk(qkv, 3, dim=-1)
@@ -45,11 +47,23 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.fc2(F.gelu(self.fc1(x)))
 
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+        
+    def forward(self, x):
+        x_in = x.to(torch.float32)
+        rms = torch.sqrt(torch.mean(x_in * x_in, dim=-1, keepdim=True) + self.eps)
+        out = x / rms * self.weight
+        return out.to(x.dtype)
+
 class Block(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
-        self.ln1 = nn.LayerNorm(config.d_model)
-        self.ln2 = nn.LayerNorm(config.d_model)
+        self.ln1 = RMSNorm(config.d_model)
+        self.ln2 = RMSNorm(config.d_model)
         self.attn = Attention(config)
         self.ff = FeedForward(config)
         
@@ -65,7 +79,7 @@ class LM(nn.Module):
         self.tok_emb = nn.Embedding(config.vocab_size, config.d_model)
         self.pos_emb = nn.Parameter(torch.zeros(1, config.max_seq_len, config.d_model))
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.n_layers)])
-        self.ln_f = nn.LayerNorm(config.d_model)
+        self.ln_f = RMSNorm(config.d_model)
         self.head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         nn.init.normal_(self.tok_emb.weight, std=0.02)
         nn.init.normal_(self.head.weight, std=0.02)
@@ -78,7 +92,7 @@ class LM(nn.Module):
             x = block(x, mask)
         return self.head(self.ln_f(x))
 
-def benchmark_torch(batch_size=128, seq_len=512, n_layers=12, n_heads=12, d_model=768, steps=30, warmup=1, device='cuda', dtype=torch.float32):
+def benchmark_torch(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_model=1024, steps=10, warmup=3, device='cuda', dtype=torch.bfloat16):
     assert torch.cuda.is_available(), "CUDA device required"
     device = 'cuda'
 
@@ -93,28 +107,34 @@ def benchmark_torch(batch_size=128, seq_len=512, n_layers=12, n_heads=12, d_mode
         for _ in range(warmup):
             model(x)
     
+    torch.cuda.synchronize()
+    
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
-    torch.cuda.synchronize()
+    
     start.record()
     with torch.no_grad():
         for _ in range(steps):
             model(x)
     end.record()
+    
     torch.cuda.synchronize()
     return start.elapsed_time(end) / steps
 
 if __name__ == "__main__":
     print(f"PyTorch CUDA version: {torch.version.cuda}")
     print(f"Using device: {torch.cuda.get_device_name(0)}\n")
-    trials = 5
+    trials = 3
     times = []
     for i in range(trials):
         ms = benchmark_torch(
             batch_size=128,
             seq_len=512,
-            steps=30,
-            warmup=1
+            n_layers=24,
+            n_heads=16,
+            d_model=1024,
+            steps=10,
+            warmup=3
         )
         times.append(ms)
         print(f"Trial {i+1}: {ms:.2f} ms per step")

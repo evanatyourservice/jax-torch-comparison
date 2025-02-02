@@ -6,10 +6,9 @@ import time
 from einops import rearrange
 from dataclasses import dataclass
 
-# jax.config.update("jax_default_matmul_precision", "tensorfloat32")
 
 @dataclass
-class Config: vocab_size: int = 50257; max_seq_len: int = 1024; d_model: int = 768; n_layers: int = 12; n_heads: int = 12
+class Config: vocab_size: int = 50257; max_seq_len: int = 1024; d_model: int = 1024; n_layers: int = 24; n_heads: int = 16; scan: bool = False
 
 def create_mask(t):
     mask = jnp.tril(jnp.ones((t, t), dtype=jnp.float32))
@@ -45,12 +44,25 @@ class FeedForward(nn.Module):
     def __call__(self, x):
         return self.fc2(nn.gelu(self.fc1(x)))
 
+class RMSNorm(nn.Module):
+    dim: int
+    eps: float = 1e-6
+    
+    def setup(self):
+        self.weight = self.param('weight', nn.initializers.ones, (self.dim,))
+        
+    def __call__(self, x):
+        x_in = x.astype(jnp.float32)
+        rms = jnp.sqrt(jnp.mean(x_in * x_in, axis=-1, keepdims=True) + self.eps)
+        out = x / rms * self.weight
+        return out.astype(x.dtype)
+
 class Block(nn.Module):
     config: Config
     
     def setup(self):
-        self.ln1 = nn.LayerNorm()
-        self.ln2 = nn.LayerNorm()
+        self.ln1 = RMSNorm(self.config.d_model)
+        self.ln2 = RMSNorm(self.config.d_model)
         self.attn = Attention(self.config)
         self.ff = FeedForward(self.config)
         
@@ -70,7 +82,7 @@ class LM(nn.Module):
         )
         self.pos_emb = self.param('pos_emb', nn.initializers.zeros, (1, self.config.max_seq_len, self.config.d_model))
         self.blocks = [Block(self.config) for _ in range(self.config.n_layers)]
-        self.ln_f = nn.LayerNorm()
+        self.ln_f = RMSNorm(self.config.d_model)
         self.head = nn.Dense(
             self.config.vocab_size,
             use_bias=False,
@@ -89,7 +101,7 @@ class LM(nn.Module):
 def model_step(variables, x):
     return model.apply(variables, x)
 
-def benchmark_jax(batch_size=128, seq_len=512, n_layers=12, n_heads=12, d_model=768, steps=30, warmup=1, dtype=jnp.float32):
+def benchmark_jax(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_model=1024, steps=10, warmup=3, dtype=jnp.bfloat16):
     key = jax.random.PRNGKey(0)
     config = Config(n_layers=n_layers, n_heads=n_heads, d_model=d_model, max_seq_len=seq_len)
     global model
@@ -97,6 +109,7 @@ def benchmark_jax(batch_size=128, seq_len=512, n_layers=12, n_heads=12, d_model=
     
     x = jax.random.randint(key, (batch_size, seq_len), 0, config.vocab_size)
     variables = model.init(key, x)
+    variables = jax.tree_map(lambda x: x.astype(dtype) if x.dtype == jnp.float32 else x, variables)
     
     print(f"JAX devices: {jax.devices()}")
     x = jax.device_put(x, jax.devices()[0])
@@ -116,14 +129,17 @@ def benchmark_jax(batch_size=128, seq_len=512, n_layers=12, n_heads=12, d_model=
 if __name__ == "__main__":
     print(f"JAX version: {jax.__version__}")
     print(f"Devices available: {jax.devices()}\n")
-    trials = 5
+    trials = 3
     times = []
     for i in range(trials):
         ms = benchmark_jax(
             batch_size=128,
             seq_len=512,
-            steps=30,
-            warmup=1
+            n_layers=24,
+            n_heads=16,
+            d_model=1024,
+            steps=10,
+            warmup=3
         )
         times.append(ms)
         print(f"Trial {i+1}: {ms:.2f} ms per step")
