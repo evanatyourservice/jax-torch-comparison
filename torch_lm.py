@@ -13,7 +13,7 @@ torch.set_float32_matmul_precision("high")  # tensorfloat32
 
 
 @dataclass
-class Config: vocab_size: int = 50257; max_seq_len: int = 1024; d_model: int = 1024; n_layers: int = 24; n_heads: int = 16
+class Config: vocab_size: int = 50257; max_seq_len: int = 1024; d_model: int = 768; n_layers: int = 24; n_heads: int = 12
 
 def create_mask(t, device):
     mask = torch.tril(torch.ones((t, t), dtype=torch.bool))
@@ -96,7 +96,7 @@ class LM(nn.Module):
             x = block(x, mask)
         return self.head(self.ln_f(x))
 
-def benchmark_torch(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_model=1024, steps=10, warmup=3, device='cuda', dtype=torch.bfloat16, compile=False):
+def benchmark_torch(batch_size=128, seq_len=512, n_layers=24, n_heads=12, d_model=768, steps=10, warmup=3, device='cuda', dtype=torch.bfloat16, compile=False):
     assert torch.cuda.is_available(), "CUDA device required"
     device = 'cuda'
     torch.backends.cudnn.benchmark = True
@@ -104,28 +104,22 @@ def benchmark_torch(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_mode
     torch.manual_seed(0)
     config = Config(n_layers=n_layers, n_heads=n_heads, d_model=d_model, max_seq_len=seq_len)
     model = LM(config).to(device=device, dtype=dtype)
+    model.train()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, fused=True)
     
-    # Define forward step
-    def forward_step(model, x):
-        # Shift tokens for language modeling
-        targets = x[:, 1:]
-        x = x[:, :-1]
-        logits = model(x)
-        return F.cross_entropy(logits.contiguous().view(-1, logits.size(-1)), 
-                             targets.contiguous().view(-1))
+    def forward_step(model, batch):
+        logits = model(batch[:, :-1])
+        return F.cross_entropy(logits.view(-1, logits.size(-1)), batch[:, 1:].view(-1))
     
     if compile:
-        model = torch.compile(model)
         forward_step = torch.compile(forward_step)
     
-    model.train()
     x = torch.randint(0, config.vocab_size, (batch_size, seq_len + 1), device=device)  # +1 for targets
     
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Starting trial with {n_params/1e6:.1f}M parameter model...")
     
-    # Warmup
+    # warmup
     for _ in range(warmup):
         loss = forward_step(model, x)
         loss.backward()
@@ -152,38 +146,51 @@ if __name__ == "__main__":
     print(f"PyTorch CUDA version: {torch.version.cuda}")
     print(f"Using device: {torch.cuda.get_device_name(0)}\n")
     
-    batch_size = 32
+    batch_size = 64
+    trials = 3
 
-    # print("Testing without compile:\n")
-    # for trial in range(3):
-    #     try:
-    #         ms = benchmark_torch(
-    #             batch_size=batch_size,
-    #             seq_len=512,
-    #             n_layers=24,
-    #             n_heads=16,
-    #             d_model=1024,
-    #             steps=10,
-    #             warmup=3,
-    #             compile=False
-    #         )
-    #         print(f"Trial {trial + 1}: {ms:.2f} ms per step")
-    #     except Exception as e:
-    #         print(f"Error in trial {trial + 1}: {str(e)}")
-
-    print("\nTesting with compile:\n")
-    for trial in range(3):
+    print("Testing without compile:\n")
+    times = []
+    for trial in range(trials):
         try:
             ms = benchmark_torch(
                 batch_size=batch_size,
-                seq_len=1024,
+                seq_len=512,
                 n_layers=24,
-                n_heads=16,
-                d_model=1024,
+                n_heads=12,
+                d_model=768,
+                steps=10,
+                warmup=3,
+                compile=False
+            )
+            times.append(ms)
+            print(f"Trial {trial + 1}: {ms:.2f} ms per step")
+        except Exception as e:
+            print(f"Error in trial {trial + 1}: {str(e)}")
+
+    if times:
+        avg_time = sum(times) / len(times)
+        print(f"\nAverage: {avg_time:.2f} ms per step")
+
+    print("\nTesting with compile:\n")
+    times = []
+    for trial in range(trials):
+        try:
+            ms = benchmark_torch(
+                batch_size=batch_size,
+                seq_len=512,
+                n_layers=24,
+                n_heads=12,
+                d_model=768,
                 steps=10,
                 warmup=3,
                 compile=True
             )
+            times.append(ms)
             print(f"Trial {trial + 1}: {ms:.2f} ms per step")
         except Exception as e:
             print(f"Error in trial {trial + 1}: {str(e)}")
+    
+    if times:
+        avg_time = sum(times) / len(times)
+        print(f"\nAverage: {avg_time:.2f} ms per step")
