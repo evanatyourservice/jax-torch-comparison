@@ -104,33 +104,17 @@ def benchmark_torch(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_mode
     torch.manual_seed(0)
     config = Config(n_layers=n_layers, n_heads=n_heads, d_model=d_model, max_seq_len=seq_len)
     model = LM(config).to(device=device, dtype=dtype)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, fused=True)
-    
-    # Define forward step
-    def forward_step(model, x):
-        # Shift tokens for language modeling
-        targets = x[:, 1:]
-        x = x[:, :-1]
-        logits = model(x)
-        return F.cross_entropy(logits.contiguous().view(-1, logits.size(-1)), 
-                             targets.contiguous().view(-1))
-    
     if compile:
         model = torch.compile(model)
-        forward_step = torch.compile(forward_step)
-    
-    model.train()
-    x = torch.randint(0, config.vocab_size, (batch_size, seq_len + 1), device=device)  # +1 for targets
+    model.eval()
+    x = torch.randint(0, config.vocab_size, (batch_size, seq_len), device=device)
     
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Starting trial with {n_params/1e6:.1f}M parameter model...")
     
-    # Warmup
-    for _ in range(warmup):
-        loss = forward_step(model, x)
-        loss.backward()
-        optimizer.zero_grad()
-        optimizer.step()
+    with torch.no_grad():
+        for _ in range(warmup):
+            model(x)
     
     torch.cuda.synchronize()
     
@@ -138,11 +122,9 @@ def benchmark_torch(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_mode
     end = torch.cuda.Event(enable_timing=True)
     
     start.record()
-    for _ in range(steps):
-        loss = forward_step(model, x)
-        loss.backward()
-        optimizer.zero_grad()
-        optimizer.step()
+    with torch.no_grad():
+        for _ in range(steps):
+            model(x)
     end.record()
     
     torch.cuda.synchronize()
@@ -152,30 +134,30 @@ if __name__ == "__main__":
     print(f"PyTorch CUDA version: {torch.version.cuda}")
     print(f"Using device: {torch.cuda.get_device_name(0)}\n")
     
-    batch_size = 32
+    batch_sizes = [64, 128, 256]
 
-    # print("Testing without compile:\n")
-    # for trial in range(3):
-    #     try:
-    #         ms = benchmark_torch(
-    #             batch_size=batch_size,
-    #             seq_len=512,
-    #             n_layers=24,
-    #             n_heads=16,
-    #             d_model=1024,
-    #             steps=10,
-    #             warmup=3,
-    #             compile=False
-    #         )
-    #         print(f"Trial {trial + 1}: {ms:.2f} ms per step")
-    #     except Exception as e:
-    #         print(f"Error in trial {trial + 1}: {str(e)}")
-
-    print("\nTesting with compile:\n")
-    for trial in range(3):
+    print("Testing without compile:\n")
+    for bs in batch_sizes:
         try:
             ms = benchmark_torch(
-                batch_size=batch_size,
+                batch_size=bs,
+                seq_len=1024,
+                n_layers=24,
+                n_heads=16,
+                d_model=1024,
+                steps=10,
+                warmup=3,
+                compile=False
+            )
+            print(f"Batch size {bs}: {ms:.2f} ms per step")
+        except Exception as e:
+            print(f"Error with batch size {bs}: {str(e)}")
+
+    print("\nTesting with compile:\n")
+    for bs in batch_sizes:
+        try:
+            ms = benchmark_torch(
+                batch_size=bs,
                 seq_len=1024,
                 n_layers=24,
                 n_heads=16,
@@ -184,6 +166,6 @@ if __name__ == "__main__":
                 warmup=3,
                 compile=True
             )
-            print(f"Trial {trial + 1}: {ms:.2f} ms per step")
+            print(f"Batch size {bs}: {ms:.2f} ms per step")
         except Exception as e:
-            print(f"Error in trial {trial + 1}: {str(e)}")
+            print(f"Error with batch size {bs}: {str(e)}")
