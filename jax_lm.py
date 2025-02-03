@@ -12,7 +12,7 @@ jax.config.update('jax_default_matmul_precision', 'tensorfloat32')  # tensorfloa
 
 
 @dataclass
-class Config: vocab_size: int = 50257; max_seq_len: int = 1024; d_model: int = 768; n_layers: int = 24; n_heads: int = 12; scan: bool = False
+class Config: vocab_size: int = 50257; max_seq_len: int = 1024; d_model: int = 1024; n_layers: int = 24; n_heads: int = 16; scan: bool = False
 
 def create_mask(t):
     mask = jnp.tril(jnp.ones((t, t), dtype=jnp.bool))
@@ -115,11 +115,26 @@ class LM(nn.Module):
                 x = block(x, mask)
         return self.head(self.ln_f(x))
 
-def benchmark_jax(batch_size=128, seq_len=512, n_layers=24, n_heads=12, d_model=768, steps=10, warmup=3, dtype=jnp.bfloat16, scan=False):
+def benchmark_jax(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_model=1024, steps=10, warmup=3, dtype=jnp.bfloat16, scan=False):
     key = jax.random.PRNGKey(0)
     config = Config(n_layers=n_layers, n_heads=n_heads, d_model=d_model, max_seq_len=seq_len, scan=scan)
     model = LM(config)
-
+    
+    def loss_fn(params, x, targets):
+        logits = model.apply(params, x)
+        return jnp.mean(
+            optax.softmax_cross_entropy_with_integer_labels(
+                logits.reshape(-1, logits.shape[-1]), 
+                targets.reshape(-1)
+            )
+        )
+    
+    def update_step(params, opt_state, x, targets):
+        loss, grads = jax.value_and_grad(loss_fn)(params, x, targets)
+        updates, opt_state = optimizer.update(grads, opt_state, params)
+        params = optax.apply_updates(params, updates)
+        return params, opt_state
+    
     # Initialize model and optimizer
     x = jax.random.randint(key, (batch_size, seq_len + 1), 0, config.vocab_size)
     variables = model.init(key, x[:, :-1])  # Initialize with input shape
@@ -127,30 +142,26 @@ def benchmark_jax(batch_size=128, seq_len=512, n_layers=24, n_heads=12, d_model=
     
     optimizer = optax.adam(learning_rate=1e-4)
     opt_state = optimizer.init(variables)
-
-    @jax.jit
-    def update_step(params, opt_state, batch):
-        def loss_fn(params, batch):
-            logits = model.apply(params, batch[:, :-1])
-            return jnp.mean(optax.softmax_cross_entropy_with_integer_labels(logits, batch[:, 1:]))
-
-        loss, grads = jax.value_and_grad(loss_fn)(params, batch)
-        updates, opt_state = optimizer.update(grads, opt_state, params)
-        params = optax.apply_updates(params, updates)
-        return params, opt_state
-
+    
+    # JIT compile the update step
+    jitted_update = jax.jit(update_step)
+    
     n_params = sum(x.size for x in jax.tree.leaves(variables))
     print(f"Starting trial with {n_params/1e6:.1f}M parameter model...")
-
-    # warmup
+    
+    # Warmup
     for _ in range(warmup):
-        variables, opt_state = update_step(variables, opt_state, x)
-    variables, opt_state = jax.block_until_ready((variables, opt_state))
+        input_ids = x[:, :-1]
+        targets = x[:, 1:]
+        variables, opt_state = jitted_update(variables, opt_state, input_ids, targets)
+        jax.block_until_ready(variables)
     
     start = time.time()
     for _ in range(steps):
-        variables, opt_state = update_step(variables, opt_state, x)
-    variables, opt_state = jax.block_until_ready((variables, opt_state))
+        input_ids = x[:, :-1]
+        targets = x[:, 1:]
+        variables, opt_state = jitted_update(variables, opt_state, input_ids, targets)
+    variables = jax.block_until_ready(variables)
     end = time.time()
     
     total_time_ms = (end - start) * 1000
@@ -161,50 +172,37 @@ if __name__ == "__main__":
     print(f"Devices available: {jax.devices()}\n")
     
     batch_size = 64
-    trials = 3
     
     print("Testing without scan:\n")
-    times = []
-    for trial in range(trials):
+    for trial in range(3):
         try:
             ms = benchmark_jax(
                 batch_size=batch_size,
                 seq_len=512,
                 n_layers=24,
-                n_heads=12,
-                d_model=768,
+                n_heads=16,
+                d_model=1024,
                 steps=10,
                 warmup=3,
                 scan=False
             )
-            times.append(ms)
             print(f"Trial {trial + 1}: {ms:.2f} ms per step")
         except Exception as e:
             print(f"Error in trial {trial + 1}: {str(e)}")
 
-    if times:
-        avg_time = sum(times) / len(times)
-        print(f"\nAverage: {avg_time:.2f} ms per step")
-
     print("\nTesting with scan:\n")
-    times = []
-    for trial in range(trials):
+    for trial in range(3):
         try:
             ms = benchmark_jax(
                 batch_size=batch_size,
                 seq_len=512,
                 n_layers=24,
-                n_heads=12,
-                d_model=768,
+                n_heads=16,
+                d_model=1024,
                 steps=10,
                 warmup=3,
                 scan=True
             )
-            times.append(ms)
             print(f"Trial {trial + 1}: {ms:.2f} ms per step")
         except Exception as e:
             print(f"Error in trial {trial + 1}: {str(e)}")
-    
-    if times:
-        avg_time = sum(times) / len(times)
-        print(f"\nAverage: {avg_time:.2f} ms per step")
