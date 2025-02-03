@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 from flax import linen as nn
 from einops import rearrange
+import optax
 
 jax.config.update('jax_default_matmul_precision', 'tensorfloat32')  # tensorfloat32
 
@@ -118,25 +119,49 @@ def benchmark_jax(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_model=
     key = jax.random.PRNGKey(0)
     config = Config(n_layers=n_layers, n_heads=n_heads, d_model=d_model, max_seq_len=seq_len, scan=scan)
     model = LM(config)
-
-    @jax.jit
-    def model_step(variables, x):
-        return model.apply(variables, x)
     
-    x = jax.random.randint(key, (batch_size, seq_len), 0, config.vocab_size)
-    variables = model.init(key, x)
+    def loss_fn(params, x, targets):
+        logits = model.apply(params, x)
+        return jnp.mean(
+            optax.softmax_cross_entropy_with_integer_labels(
+                logits.reshape(-1, logits.shape[-1]), 
+                targets.reshape(-1)
+            )
+        )
+    
+    def update_step(params, opt_state, x, targets):
+        loss, grads = jax.value_and_grad(loss_fn)(params, x, targets)
+        updates, opt_state = optimizer.update(grads, opt_state, params)
+        params = optax.apply_updates(params, updates)
+        return params, opt_state
+    
+    # Initialize model and optimizer
+    x = jax.random.randint(key, (batch_size, seq_len + 1), 0, config.vocab_size)
+    variables = model.init(key, x[:, :-1])  # Initialize with input shape
     variables = jax.tree.map(lambda x: x.astype(dtype) if x.dtype == jnp.float32 else x, variables)
+    
+    optimizer = optax.adam(learning_rate=1e-4)
+    opt_state = optimizer.init(variables)
+    
+    # JIT compile the update step
+    jitted_update = jax.jit(update_step)
     
     n_params = sum(x.size for x in jax.tree.leaves(variables))
     print(f"Starting trial with {n_params/1e6:.1f}M parameter model...")
-
+    
+    # Warmup
     for _ in range(warmup):
-        model_step(variables, x).block_until_ready()
+        input_ids = x[:, :-1]
+        targets = x[:, 1:]
+        variables, opt_state = jitted_update(variables, opt_state, input_ids, targets)
+        jax.block_until_ready(variables)
     
     start = time.time()
     for _ in range(steps):
-        out = model_step(variables, x)
-    out = jax.block_until_ready(out)
+        input_ids = x[:, :-1]
+        targets = x[:, 1:]
+        variables, opt_state = jitted_update(variables, opt_state, input_ids, targets)
+    variables = jax.block_until_ready(variables)
     end = time.time()
     
     total_time_ms = (end - start) * 1000
@@ -146,14 +171,14 @@ if __name__ == "__main__":
     print(f"JAX version: {jax.__version__}")
     print(f"Devices available: {jax.devices()}\n")
     
-    batch_sizes = [64, 128, 256]
-
+    batch_size = 64
+    
     print("Testing without scan:\n")
-    for bs in batch_sizes:
+    for trial in range(3):
         try:
             ms = benchmark_jax(
-                batch_size=bs,
-                seq_len=1024,
+                batch_size=batch_size,
+                seq_len=512,
                 n_layers=24,
                 n_heads=16,
                 d_model=1024,
@@ -161,16 +186,16 @@ if __name__ == "__main__":
                 warmup=3,
                 scan=False
             )
-            print(f"Batch size {bs}: {ms:.2f} ms per step")
+            print(f"Trial {trial + 1}: {ms:.2f} ms per step")
         except Exception as e:
-            print(f"Error with batch size {bs}: {str(e)}")
+            print(f"Error in trial {trial + 1}: {str(e)}")
 
     print("\nTesting with scan:\n")
-    for bs in batch_sizes:
+    for trial in range(3):
         try:
             ms = benchmark_jax(
-                batch_size=bs,
-                seq_len=1024,
+                batch_size=batch_size,
+                seq_len=512,
                 n_layers=24,
                 n_heads=16,
                 d_model=1024,
@@ -178,6 +203,6 @@ if __name__ == "__main__":
                 warmup=3,
                 scan=True
             )
-            print(f"Batch size {bs}: {ms:.2f} ms per step")
+            print(f"Trial {trial + 1}: {ms:.2f} ms per step")
         except Exception as e:
-            print(f"Error with batch size {bs}: {str(e)}")
+            print(f"Error in trial {trial + 1}: {str(e)}")
