@@ -105,7 +105,7 @@ class LM(nn.Module):
 
     def __call__(self, idx):
         b, t = idx.shape
-        mask = create_mask(t)
+        mask = create_mask(t)  # could be done later in block
         x = self.tok_emb(idx) + self.pos_emb[:, :t, :]
         if self.scanning:
             x = self.blocks((x, mask))[0]
