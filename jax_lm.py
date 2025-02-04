@@ -146,7 +146,7 @@ if __name__ == "__main__":
     print(f"JAX version: {jax.__version__}")
     print(f"Devices available: {jax.devices()}\n")
     
-    batch_sizes = [64, 128, 256]
+    batch_sizes = [32, 64, 128]
 
     print("Testing without scan:\n")
     for bs in batch_sizes:

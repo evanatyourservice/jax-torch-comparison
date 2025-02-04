@@ -134,7 +134,7 @@ if __name__ == "__main__":
     print(f"PyTorch CUDA version: {torch.version.cuda}")
     print(f"Using device: {torch.cuda.get_device_name(0)}\n")
     
-    batch_sizes = [64, 128, 256]
+    batch_sizes = [32, 64, 128]
 
     print("Testing without compile:\n")
     for bs in batch_sizes:
