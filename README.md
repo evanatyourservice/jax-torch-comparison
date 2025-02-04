@@ -10,14 +10,14 @@ pip install -r requirements.txt && pip install -U "jax[cuda12]" && pip install -
 
 TL;DR: Torch is faster, but only after using torch.compile and enabling tensorfloat32 (if using float32 dtype).
 
-JAX could be faster for your use case if it becomes hard to get everything into torch.compile (I originally started using JAX to be able
+JAX could be faster if it becomes hard to get everything into torch.compile (I originally started using JAX to be able
 to compile RL including environment, replaybuffer, agent, and model all under a single jit). Also, there may be cases where it is
 easier to distribute using JAX, as its sharding tends to be more flexible. If you can get everything into torch.compile and have a
 straightforward distributed setup, it's probably better to use torch when on GPUs. JAX seems to use more memory than torch as batch size 
 256 OOMs for JAX but runs for torch albeit slowly.
 
-### JAX Implementation:
+### JAX Implementation (1xH100 SXM 80GB):
 ![JAX Speed](stuff/jax_speed.png)
 
-### PyTorch Implementation:
+### PyTorch Implementation (1xH100 SXM 80GB):
 ![PyTorch Speed](stuff/torch_speed.png)
