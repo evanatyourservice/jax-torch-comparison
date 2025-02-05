@@ -5,31 +5,11 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.backends import cuda, cudnn, opt_einsum
 from einops import rearrange
-import torch._inductor.config as ind_cfg
 
-ind_cfg.nan_asserts = False
-ind_cfg.dce = True
-ind_cfg.keep_output_stride = False
-ind_cfg.layout_optimization = True
-ind_cfg.shape_padding = True
-ind_cfg.permute_fusion = True
-ind_cfg.max_autotune = True
-ind_cfg.max_autotune_pointwise = True
-ind_cfg.max_autotune_gemm = True
-ind_cfg.memory_planning = True
-ind_cfg.use_mixed_mm = True
-ind_cfg.b2b_gemm_pass = True
-ind_cfg.coordinate_descent_tuning = True
-ind_cfg.coordinate_descent_check_all_directions = True
+torch.backends.cudnn.benchmark = True
+torch.set_float32_matmul_precision("high")  # tensorfloat32
 
-cudnn.benchmark = True
-cudnn.deterministic = False
-torch.use_deterministic_algorithms(False)
-torch.set_float32_matmul_precision("high")  # highest: FP32, high: TF32, medium: bf16
-opt_einsum.enabled = True
-opt_einsum.strategy = "dp"
 
 @dataclass
 class Config:
@@ -123,8 +103,7 @@ class LM(nn.Module):
 def benchmark_torch(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_model=1024, steps=10, warmup=3, device='cuda', dtype=torch.bfloat16, compile=False):
     assert torch.cuda.is_available(), "CUDA device required"
     device = 'cuda'
-    torch.backends.cudnn.benchmark = True
-    
+
     torch.manual_seed(0)
     config = Config(n_layers=n_layers, n_heads=n_heads, d_model=d_model, max_seq_len=seq_len)
     model = LM(config).to(device=device, dtype=dtype)

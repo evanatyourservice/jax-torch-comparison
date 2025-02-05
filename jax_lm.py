@@ -1,4 +1,5 @@
 from typing import Optional
+import os
 import time
 from dataclasses import dataclass
 
@@ -7,6 +8,10 @@ import jax.numpy as jnp
 from flax import linen as nn
 from einops import rearrange
 
+os.environ['XLA_FLAGS'] = (
+    '--xla_gpu_triton_gemm_any=True '
+    '--xla_gpu_enable_latency_hiding_scheduler=true '
+)
 jax.config.update('jax_default_matmul_precision', 'tensorfloat32')  # tensorfloat32
 
 
