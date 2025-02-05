@@ -5,15 +5,39 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.backends import cuda, cudnn, opt_einsum
 from einops import rearrange
+import torch._inductor.config as ind_cfg
 
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
-torch.set_float32_matmul_precision("high")  # tensorfloat32 matmul precision
+ind_cfg.nan_asserts = False
+ind_cfg.dce = True
+ind_cfg.keep_output_stride = False
+ind_cfg.layout_optimization = True
+ind_cfg.shape_padding = True
+ind_cfg.permute_fusion = True
+ind_cfg.max_autotune = True
+ind_cfg.max_autotune_pointwise = True
+ind_cfg.max_autotune_gemm = True
+ind_cfg.memory_planning = True
+ind_cfg.use_mixed_mm = True
+ind_cfg.b2b_gemm_pass = True
+ind_cfg.coordinate_descent_tuning = True
+ind_cfg.coordinate_descent_check_all_directions = True
 
+cudnn.benchmark = True
+cudnn.deterministic = False
+torch.use_deterministic_algorithms(False)
+torch.set_float32_matmul_precision("high")  # highest: FP32, high: TF32, medium: bf16
+opt_einsum.enabled = True
+opt_einsum.strategy = "dp"
 
 @dataclass
-class Config: vocab_size: int = 50257; max_seq_len: int = 1024; d_model: int = 1024; n_layers: int = 24; n_heads: int = 16
+class Config:
+    vocab_size: int = 50257
+    max_seq_len: int = 1024
+    d_model: int = 1024
+    n_layers: int = 24
+    n_heads: int = 16
 
 def create_mask(t, device):
     mask = torch.tril(torch.ones((t, t), dtype=torch.bool))
@@ -105,7 +129,7 @@ def benchmark_torch(batch_size=128, seq_len=512, n_layers=24, n_heads=16, d_mode
     config = Config(n_layers=n_layers, n_heads=n_heads, d_model=d_model, max_seq_len=seq_len)
     model = LM(config).to(device=device, dtype=dtype)
     if compile:
-        model = torch.compile(model)
+        model = torch.compile(model, mode='max-autotune-no-cudagraphs', fullgraph=True, dynamic=False)
     model.eval()
     x = torch.randint(0, config.vocab_size, (batch_size, seq_len), device=device)
     
