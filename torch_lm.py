@@ -7,6 +7,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.backends import cuda, cudnn, opt_einsum
 from einops import rearrange
+import torch._inductor.config as ind_cfg
+
+ind_cfg.nan_asserts = False
+ind_cfg.dce = True
+ind_cfg.keep_output_stride = False
+ind_cfg.layout_optimization = True
+ind_cfg.shape_padding = True
+ind_cfg.permute_fusion = True
+ind_cfg.max_autotune = True
+ind_cfg.max_autotune_pointwise = True
+ind_cfg.max_autotune_gemm = True
+ind_cfg.memory_planning = True
+ind_cfg.use_mixed_mm = True
+ind_cfg.b2b_gemm_pass = True
+ind_cfg.coordinate_descent_tuning = True
+ind_cfg.coordinate_descent_check_all_directions = True
 
 cudnn.benchmark = True
 cudnn.deterministic = False
